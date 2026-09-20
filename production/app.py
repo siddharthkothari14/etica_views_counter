@@ -1,9 +1,11 @@
 import os
 import re
+from html import escape
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
+import altair as alt
 import streamlit as st
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
@@ -124,6 +126,53 @@ st.set_page_config(page_title="YouTube Views Dashboard", page_icon="📊", layou
 
 st_autorefresh(interval=60000, key="youtube_dashboard_refresh")
 
+st.markdown(
+    """
+    <style>
+    :root {
+        --etica-magenta: #c51b82;
+        --etica-magenta-dark: #9e1468;
+        --etica-ink: #292929;
+        --etica-muted: #6b6b6b;
+        --etica-border: #eadde5;
+    }
+    .stApp {
+        background: linear-gradient(180deg, #ffffff 0%, #fffafd 55%, #f8f5f7 100%);
+        color: var(--etica-ink);
+    }
+    h1, h2, h3 {
+        color: var(--etica-ink) !important;
+        letter-spacing: 0 !important;
+    }
+    h1 {
+        font-weight: 750 !important;
+    }
+    [data-testid="stCaptionContainer"] {
+        color: var(--etica-muted);
+    }
+    [data-testid="stMetric"] {
+        background: rgba(255, 255, 255, 0.82);
+        border: 1px solid var(--etica-border);
+        border-radius: 10px;
+        padding: 0.8rem 1rem;
+        box-shadow: 0 5px 18px rgba(75, 34, 58, 0.05);
+    }
+    [data-testid="stMetricLabel"] {
+        color: var(--etica-muted);
+    }
+    [data-testid="stMetricValue"] {
+        color: var(--etica-magenta-dark);
+    }
+    [data-testid="stDataFrame"] {
+        border: 1px solid var(--etica-border);
+        border-radius: 10px;
+        overflow: hidden;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("YouTube Views Dashboard")
 st.caption("Combined view count across your tracked videos. The dashboard refreshes automatically every minute.")
 
@@ -182,25 +231,26 @@ st_html(
         text-align: center;
         padding: 1.2rem 1rem 0.8rem;
         margin: 0.5rem auto 1.5rem;
-        background: linear-gradient(135deg, rgba(49, 130, 206, 0.14), rgba(99, 102, 241, 0.10));
-        border: 1px solid rgba(148, 163, 184, 0.25);
-        border-radius: 18px;
+        background: linear-gradient(135deg, rgba(197, 27, 130, 0.12), rgba(255, 250, 253, 0.96));
+        border: 1px solid rgba(197, 27, 130, 0.24);
+        border-radius: 12px;
         max-width: 900px;
         animation: riseIn 0.7s ease-out;
+        box-shadow: 0 12px 30px rgba(101, 26, 72, 0.08);
     }}
     .big-metric-label {{
         font-size: 0.9rem;
         letter-spacing: 0.12em;
         text-transform: uppercase;
-        color: #94a3b8;
+        color: #7b536b;
         margin-bottom: 0.25rem;
     }}
     .big-metric-value {{
         font-size: clamp(2.5rem, 5vw, 5rem);
         font-weight: 800;
         line-height: 1.1;
-        color: #f8fafc;
-        text-shadow: 0 0 18px rgba(96, 165, 250, 0.32);
+        color: #a8146c;
+        text-shadow: 0 0 18px rgba(197, 27, 130, 0.20);
     }}
     @keyframes riseIn {{
         from {{ opacity: 0; transform: translateY(12px); }}
@@ -253,22 +303,90 @@ summary_col4.metric(
 )
 st.subheader("Top performing videos")
 chart_df = merged_df[["title", "viewCount"]].head(10).copy()
-chart_df = chart_df.sort_values("viewCount", ascending=True)
-st.bar_chart(chart_df.set_index("title")["viewCount"])
+chart_df = chart_df.sort_values("viewCount", ascending=False)
+chart_df["short_title"] = chart_df["title"].str.slice(0, 28).where(
+    chart_df["title"].str.len() <= 28,
+    chart_df["title"].str.slice(0, 28) + "...",
+)
+
+chart = (
+    alt.Chart(chart_df)
+    .mark_bar(color="#c51b82", cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+    .encode(
+        x=alt.X("short_title:N", sort="-y", title=None, axis=alt.Axis(labelAngle=-35, labelColor="#4b3543")),
+        y=alt.Y("viewCount:Q", title="Views", axis=alt.Axis(format=",.0f", labelColor="#6b6b6b", titleColor="#6b6b6b")),
+        tooltip=[
+            alt.Tooltip("title:N", title="Video"),
+            alt.Tooltip("viewCount:Q", title="Views", format=",.0f"),
+        ],
+    )
+    .properties(height=360)
+    .configure(background="#fffafd")
+    .configure_view(stroke="#eadde5", fill="#fffafd")
+    .configure_axis(gridColor="#f0e5eb", domainColor="#eadde5", labelColor="#6b5360", titleColor="#6b5360")
+)
+st.altair_chart(chart, use_container_width=True)
 
 st.subheader("Video breakdown")
 
-st.dataframe(
-    merged_df[["title", "viewCount", "likeCount", "commentCount"]].rename(
-        columns={
-            "title": "Video title",
-            "viewCount": "Views",
-            "likeCount": "Likes",
-            "commentCount": "Comments",
-        }
-    ),
-    use_container_width=True,
-    hide_index=True,
+table_rows = "".join(
+    f"""
+    <tr>
+        <td>{escape(str(row.title))}</td>
+        <td>{int(row.viewCount):,}</td>
+        <td>{int(row.likeCount):,}</td>
+        <td>{int(row.commentCount):,}</td>
+    </tr>
+    """
+    for row in merged_df.itertuples(index=False)
+)
+st.markdown(
+    f"""
+    <style>
+    .etica-table-wrap {{
+        overflow-x: auto;
+        border: 1px solid #eadde5;
+        border-radius: 10px;
+        background: #fffafd;
+        box-shadow: 0 5px 18px rgba(75, 34, 58, 0.05);
+    }}
+    .etica-table {{
+        width: 100%;
+        border-collapse: collapse;
+        color: #292929;
+        font-size: 0.92rem;
+    }}
+    .etica-table th {{
+        padding: 0.7rem 0.8rem;
+        background: #c51b82;
+        color: white;
+        font-weight: 650;
+        text-align: left;
+    }}
+    .etica-table td {{
+        padding: 0.65rem 0.8rem;
+        border-top: 1px solid #f0e5eb;
+        background: #fffafd;
+    }}
+    .etica-table tr:nth-child(even) td {{
+        background: #fdf4f9;
+    }}
+    .etica-table td:not(:first-child) {{
+        text-align: right;
+        color: #9e1468;
+        font-variant-numeric: tabular-nums;
+    }}
+    </style>
+    <div class="etica-table-wrap">
+        <table class="etica-table">
+            <thead>
+                <tr><th>Video title</th><th>Views</th><th>Likes</th><th>Comments</th></tr>
+            </thead>
+            <tbody>{table_rows}</tbody>
+        </table>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 st.caption(
