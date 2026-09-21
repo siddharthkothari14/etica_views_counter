@@ -51,6 +51,17 @@ def extract_video_id(value: str) -> str | None:
     return None
 
 
+def format_duration(duration: str) -> str:
+    match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration or "")
+    if not match:
+        return "N/A"
+
+    hours, minutes, seconds = (int(value or 0) for value in match.groups())
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
 def load_video_list(file_path: Path) -> pd.DataFrame:
     if not file_path.exists():
         st.error(f"Missing video list file: {file_path.name}")
@@ -90,7 +101,17 @@ def load_video_list(file_path: Path) -> pd.DataFrame:
 
 def fetch_video_metadata(video_ids: list[str]) -> pd.DataFrame:
     if not video_ids:
-        return pd.DataFrame(columns=["video_id", "title", "viewCount", "likeCount", "commentCount"])
+        return pd.DataFrame(
+            columns=[
+                "video_id",
+                "title",
+                "publishedAt",
+                "duration",
+                "viewCount",
+                "likeCount",
+                "commentCount",
+            ]
+        )
 
     service = build("youtube", "v3", developerKey=API_KEY)
     results = []
@@ -100,7 +121,7 @@ def fetch_video_metadata(video_ids: list[str]) -> pd.DataFrame:
         response = (
             service.videos()
             .list(
-                part="snippet,statistics",
+                part="snippet,statistics,contentDetails",
                 id=",".join(batch),
             )
             .execute()
@@ -109,10 +130,13 @@ def fetch_video_metadata(video_ids: list[str]) -> pd.DataFrame:
         for item in response.get("items", []):
             stats = item.get("statistics", {})
             snippet = item.get("snippet", {})
+            content_details = item.get("contentDetails", {})
             results.append(
                 {
                     "video_id": item.get("id"),
                     "title": snippet.get("title") or "Untitled video",
+                    "publishedAt": snippet.get("publishedAt"),
+                    "duration": format_duration(content_details.get("duration", "")),
                     "viewCount": int(stats.get("viewCount", 0) or 0),
                     "likeCount": int(stats.get("likeCount", 0) or 0),
                     "commentCount": int(stats.get("commentCount", 0) or 0),
@@ -200,12 +224,15 @@ if stats_df.empty:
     st.warning("No statistics were returned for the videos in your list.")
     st.stop()
 
-merged_df = video_df[["video_id", "title"]].merge(stats_df, on="video_id", how="left")
+merged_df = video_df[["video_id", "title", "url"]].merge(stats_df, on="video_id", how="left")
 merged_df["title_x"] = merged_df["title_x"].fillna(merged_df["title_y"])
 merged_df = merged_df.rename(columns={"title_x": "title"}).drop(columns=["title_y"], errors="ignore")
 merged_df["viewCount"] = merged_df["viewCount"].fillna(0).astype(int)
 merged_df["likeCount"] = merged_df["likeCount"].fillna(0).astype(int)
 merged_df["commentCount"] = merged_df["commentCount"].fillna(0).astype(int)
+merged_df["publishedAt"] = pd.to_datetime(merged_df["publishedAt"], utc=True, errors="coerce")
+merged_df["releaseDate"] = merged_df["publishedAt"].dt.strftime("%d %b %Y").fillna("N/A")
+merged_df["duration"] = merged_df["duration"].fillna("N/A")
 merged_df = merged_df.sort_values("viewCount", ascending=False).reset_index(drop=True)
 
 combined_views = int(merged_df["viewCount"].sum())
@@ -302,21 +329,18 @@ summary_col4.metric(
     pd.Timestamp.now(tz="UTC").tz_convert("Asia/Kolkata").strftime("%H:%M IST")
 )
 st.subheader("Top performing videos")
-chart_df = merged_df[["title", "viewCount"]].head(10).copy()
-chart_df = chart_df.sort_values("viewCount", ascending=False)
-chart_df["short_title"] = chart_df["title"].str.slice(0, 28).where(
-    chart_df["title"].str.len() <= 28,
-    chart_df["title"].str.slice(0, 28) + "...",
-)
+chart_df = merged_df[["title", "publishedAt", "viewCount"]].dropna(subset=["publishedAt"]).copy()
+chart_df = chart_df.sort_values("publishedAt")
 
 chart = (
     alt.Chart(chart_df)
-    .mark_bar(color="#c51b82", cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+    .mark_line(color="#c51b82", point=alt.OverlayMarkDef(color="#9e1468", size=70))
     .encode(
-        x=alt.X("short_title:N", sort="-y", title=None, axis=alt.Axis(labelAngle=-35, labelColor="#4b3543")),
+        x=alt.X("publishedAt:T", title="Release date", axis=alt.Axis(format="%d %b %Y", labelAngle=-35, labelColor="#4b3543")),
         y=alt.Y("viewCount:Q", title="Views", axis=alt.Axis(format=",.0f", labelColor="#6b6b6b", titleColor="#6b6b6b")),
         tooltip=[
             alt.Tooltip("title:N", title="Video"),
+            alt.Tooltip("publishedAt:T", title="Released", format="%d %b %Y"),
             alt.Tooltip("viewCount:Q", title="Views", format=",.0f"),
         ],
     )
@@ -332,7 +356,9 @@ st.subheader("Video breakdown")
 table_rows = "".join(
     f"""
     <tr>
-        <td>{escape(str(row.title))}</td>
+        <td><a href="{escape(str(row.url), quote=True)}" target="_blank" rel="noopener noreferrer">{escape(str(row.title))}</a></td>
+        <td>{escape(str(row.releaseDate))}</td>
+        <td>{escape(str(row.duration))}</td>
         <td>{int(row.viewCount):,}</td>
         <td>{int(row.likeCount):,}</td>
         <td>{int(row.commentCount):,}</td>
@@ -363,6 +389,15 @@ st.markdown(
         font-weight: 650;
         text-align: left;
     }}
+    .etica-table a {{
+        color: #9e1468;
+        font-weight: 650;
+        text-decoration: none;
+    }}
+    .etica-table a:hover {{
+        color: #c51b82;
+        text-decoration: underline;
+    }}
     .etica-table td {{
         padding: 0.65rem 0.8rem;
         border-top: 1px solid #f0e5eb;
@@ -380,7 +415,7 @@ st.markdown(
     <div class="etica-table-wrap">
         <table class="etica-table">
             <thead>
-                <tr><th>Video title</th><th>Views</th><th>Likes</th><th>Comments</th></tr>
+                <tr><th>Video title</th><th>Release date</th><th>Duration</th><th>Views</th><th>Likes</th><th>Comments</th></tr>
             </thead>
             <tbody>{table_rows}</tbody>
         </table>
