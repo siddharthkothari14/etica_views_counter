@@ -106,6 +106,7 @@ def fetch_video_metadata(video_ids: list[str]) -> pd.DataFrame:
             columns=[
                 "video_id",
                 "title",
+                "channelTitle",
                 "publishedAt",
                 "duration",
                 "thumbnailUrl",
@@ -139,6 +140,7 @@ def fetch_video_metadata(video_ids: list[str]) -> pd.DataFrame:
                 {
                     "video_id": item.get("id"),
                     "title": snippet.get("title") or "Untitled video",
+                    "channelTitle": snippet.get("channelTitle") or "Unknown channel",
                     "publishedAt": snippet.get("publishedAt"),
                     "duration": format_duration(content_details.get("duration", "")),
                     "thumbnailUrl": thumbnail.get("url"),
@@ -227,6 +229,7 @@ if stats_df.empty:
     st.stop()
 
 merged_df = video_df[["video_id", "title", "url"]].merge(stats_df, on="video_id", how="left")
+merged_df["videoTitle"] = merged_df["title_y"].fillna(merged_df["title_x"])
 merged_df["title_x"] = merged_df["title_x"].fillna(merged_df["title_y"])
 merged_df = merged_df.rename(columns={"title_x": "title"}).drop(columns=["title_y"], errors="ignore")
 merged_df["viewCount"] = merged_df["viewCount"].fillna(0).astype(int)
@@ -245,13 +248,14 @@ def render_video_analysis_page(video: pd.Series, rank: int, total_videos: int) -
         st.query_params.clear()
         st.rerun()
 
-    st.header(video["title"])
-    st.markdown(f"[Open video on YouTube]({video['url']})")
-
     thumbnail_url = video.get("thumbnailUrl") or f"https://i.ytimg.com/vi/{video['video_id']}/hqdefault.jpg"
-    thumbnail_col, _ = st.columns([1, 2])
+    thumbnail_col, info_col = st.columns([1, 2])
     with thumbnail_col:
         st.image(thumbnail_url, caption="Video thumbnail", use_container_width=True)
+    with info_col:
+        st.header(video["videoTitle"])
+        st.subheader(video["channelTitle"])
+        st.markdown(f"[Open video on YouTube]({video['url']})")
 
     views = int(video["viewCount"])
     likes = int(video["likeCount"])
@@ -297,13 +301,6 @@ def render_video_analysis_page(video: pd.Series, rank: int, total_videos: int) -
         .properties(height=300)
     )
     st.altair_chart(chart, use_container_width=True)
-
-    st.subheader("Audience retention")
-    st.info(
-        "Audience-retention data is not available through the public YouTube Data API. "
-        "It requires YouTube Analytics API OAuth access to the channel that owns this video."
-    )
-
 
 requested_video_id = st.query_params.get("video")
 if requested_video_id:
