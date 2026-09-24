@@ -99,6 +99,7 @@ def load_video_list(file_path: Path) -> pd.DataFrame:
     return df[["title", "url", "video_id"]].reset_index(drop=True)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_video_metadata(video_ids: list[str]) -> pd.DataFrame:
     if not video_ids:
         return pd.DataFrame(
@@ -107,6 +108,7 @@ def fetch_video_metadata(video_ids: list[str]) -> pd.DataFrame:
                 "title",
                 "publishedAt",
                 "duration",
+                "thumbnailUrl",
                 "viewCount",
                 "likeCount",
                 "commentCount",
@@ -131,12 +133,15 @@ def fetch_video_metadata(video_ids: list[str]) -> pd.DataFrame:
             stats = item.get("statistics", {})
             snippet = item.get("snippet", {})
             content_details = item.get("contentDetails", {})
+            thumbnails = snippet.get("thumbnails", {})
+            thumbnail = thumbnails.get("maxres") or thumbnails.get("high") or thumbnails.get("medium") or {}
             results.append(
                 {
                     "video_id": item.get("id"),
                     "title": snippet.get("title") or "Untitled video",
                     "publishedAt": snippet.get("publishedAt"),
                     "duration": format_duration(content_details.get("duration", "")),
+                    "thumbnailUrl": thumbnail.get("url"),
                     "viewCount": int(stats.get("viewCount", 0) or 0),
                     "likeCount": int(stats.get("likeCount", 0) or 0),
                     "commentCount": int(stats.get("commentCount", 0) or 0),
@@ -197,9 +202,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("YouTube Views Dashboard")
-st.caption("Combined view count across your tracked videos. The dashboard refreshes automatically every minute.")
-
 if not API_KEY:
     st.warning(
         "No YouTube Data API key was found. Add YOUTUBE_API_KEY to a .env file in the same folder as this app and restart the dashboard."
@@ -234,6 +236,92 @@ merged_df["publishedAt"] = pd.to_datetime(merged_df["publishedAt"], utc=True, er
 merged_df["releaseDate"] = merged_df["publishedAt"].dt.strftime("%d %b %Y").fillna("N/A")
 merged_df["duration"] = merged_df["duration"].fillna("N/A")
 merged_df = merged_df.sort_values("viewCount", ascending=False).reset_index(drop=True)
+
+
+def render_video_analysis_page(video: pd.Series, rank: int, total_videos: int) -> None:
+    """Render the public-data analysis page for one video."""
+    st.title("Video Analysis")
+    if st.button("← Back to dashboard"):
+        st.query_params.clear()
+        st.rerun()
+
+    st.header(video["title"])
+    st.markdown(f"[Open video on YouTube]({video['url']})")
+
+    thumbnail_url = video.get("thumbnailUrl") or f"https://i.ytimg.com/vi/{video['video_id']}/hqdefault.jpg"
+    thumbnail_col, _ = st.columns([1, 2])
+    with thumbnail_col:
+        st.image(thumbnail_url, caption="Video thumbnail", use_container_width=True)
+
+    views = int(video["viewCount"])
+    likes = int(video["likeCount"])
+    comments = int(video["commentCount"])
+    published_at = video["publishedAt"]
+    age_days = max((pd.Timestamp.now(tz="UTC") - published_at).days, 1) if pd.notna(published_at) else None
+    engagement_rate = ((likes + comments) / views * 100) if views else 0
+    like_rate = (likes / views * 100) if views else 0
+    comment_rate = (comments / views * 100) if views else 0
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    metric_col1.metric("Views", f"{views:,}")
+    metric_col2.metric("Likes", f"{likes:,}")
+    metric_col3.metric("Comments", f"{comments:,}")
+    metric_col4.metric("Engagement rate", f"{engagement_rate:.2f}%")
+
+    metric_col5, metric_col6, metric_col7, metric_col8 = st.columns(4)
+    metric_col5.metric("Like rate", f"{like_rate:.2f}%")
+    metric_col6.metric("Comment rate", f"{comment_rate:.2f}%")
+    metric_col7.metric("Views per day", f"{views / age_days:,.0f}" if age_days else "N/A")
+    metric_col8.metric("List rank", f"#{rank} of {total_videos}")
+
+    st.subheader("Video details")
+    detail_col1, detail_col2, detail_col3 = st.columns(3)
+    detail_col1.write(f"**Published:** {video['releaseDate']}")
+    detail_col2.write(f"**Duration:** {video['duration']}")
+    detail_col3.write(f"**Age:** {age_days:,} days" if age_days else "**Age:** N/A")
+
+    chart_df = pd.DataFrame(
+        {
+            "Metric": ["Views", "Likes", "Comments"],
+            "Count": [views, likes, comments],
+        }
+    )
+    chart = (
+        alt.Chart(chart_df)
+        .mark_bar(color="#c51b82", cornerRadiusTopLeft=5, cornerRadiusTopRight=5)
+        .encode(
+            x=alt.X("Metric:N", title=None),
+            y=alt.Y("Count:Q", title="Count", axis=alt.Axis(format=",.0f")),
+            tooltip=[alt.Tooltip("Metric:N"), alt.Tooltip("Count:Q", format=",.0f")],
+        )
+        .properties(height=300)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+    st.subheader("Audience retention")
+    st.info(
+        "Audience-retention data is not available through the public YouTube Data API. "
+        "It requires YouTube Analytics API OAuth access to the channel that owns this video."
+    )
+
+
+requested_video_id = st.query_params.get("video")
+if requested_video_id:
+    requested_video = merged_df.loc[merged_df["video_id"] == requested_video_id]
+    if requested_video.empty:
+        st.error("That video could not be found in the tracked video list.")
+        if st.button("Back to dashboard"):
+            st.query_params.clear()
+            st.rerun()
+        st.stop()
+
+    selected_video = requested_video.iloc[0]
+    selected_rank = int(merged_df.index[merged_df["video_id"] == requested_video_id][0]) + 1
+    render_video_analysis_page(selected_video, selected_rank, len(merged_df))
+    st.stop()
+
+st.title("YouTube Views Dashboard")
+st.caption("Combined view count across your tracked videos. The dashboard refreshes automatically every minute.")
 
 combined_views = int(merged_df["viewCount"].sum())
 avg_views = int(merged_df["viewCount"].mean()) if not merged_df.empty else 0
@@ -352,77 +440,55 @@ chart = (
 st.altair_chart(chart, use_container_width=True)
 
 st.subheader("Video breakdown")
+st.caption("Select Analysis for a local breakdown using the statistics already fetched above.")
 
-table_rows = "".join(
-    f"""
-    <tr>
-        <td><a href="{escape(str(row.url), quote=True)}" target="_blank" rel="noopener noreferrer">{escape(str(row.title))}</a></td>
-        <td>{escape(str(row.releaseDate))}</td>
-        <td>{escape(str(row.duration))}</td>
-        <td>{int(row.viewCount):,}</td>
-        <td>{int(row.likeCount):,}</td>
-        <td>{int(row.commentCount):,}</td>
-    </tr>
-    """
-    for row in merged_df.itertuples(index=False)
-)
 st.markdown(
-    f"""
+    """
     <style>
-    .etica-table-wrap {{
-        overflow-x: auto;
-        border: 1px solid #eadde5;
-        border-radius: 10px;
-        background: #fffafd;
-        box-shadow: 0 5px 18px rgba(75, 34, 58, 0.05);
-    }}
-    .etica-table {{
-        width: 100%;
-        border-collapse: collapse;
-        color: #292929;
-        font-size: 0.92rem;
-    }}
-    .etica-table th {{
-        padding: 0.7rem 0.8rem;
-        background: #c51b82;
-        color: white;
-        font-weight: 650;
-        text-align: left;
-    }}
-    .etica-table a {{
+    .video-row {
+        border-top: 1px solid #f0e5eb;
+        padding: 0.35rem 0;
+    }
+    .video-title {
         color: #9e1468;
         font-weight: 650;
         text-decoration: none;
-    }}
-    .etica-table a:hover {{
+    }
+    .video-title:hover {
         color: #c51b82;
         text-decoration: underline;
-    }}
-    .etica-table td {{
-        padding: 0.65rem 0.8rem;
-        border-top: 1px solid #f0e5eb;
-        background: #fffafd;
-    }}
-    .etica-table tr:nth-child(even) td {{
-        background: #fdf4f9;
-    }}
-    .etica-table td:not(:first-child) {{
-        text-align: right;
-        color: #9e1468;
-        font-variant-numeric: tabular-nums;
-    }}
+    }
     </style>
-    <div class="etica-table-wrap">
-        <table class="etica-table">
-            <thead>
-                <tr><th>Video title</th><th>Release date</th><th>Duration</th><th>Views</th><th>Likes</th><th>Comments</th></tr>
-            </thead>
-            <tbody>{table_rows}</tbody>
-        </table>
-    </div>
     """,
     unsafe_allow_html=True,
 )
+
+header_title, header_release, header_duration, header_views, header_likes, header_comments, header_action = st.columns(
+    [3.5, 1.2, 1, 1, 1, 1, 1.25]
+)
+header_title.markdown("**Video title**")
+header_release.markdown("**Release date**")
+header_duration.markdown("**Duration**")
+header_views.markdown("**Views**")
+header_likes.markdown("**Likes**")
+header_comments.markdown("**Comments**")
+
+for row in merged_df.itertuples(index=False):
+    title_col, release_col, duration_col, views_col, likes_col, comments_col, action_col = st.columns(
+        [3.5, 1.2, 1, 1, 1, 1, 1.25]
+    )
+    title_col.markdown(
+        f'<a class="video-title" href="{escape(str(row.url), quote=True)}" target="_blank" rel="noopener noreferrer">{escape(str(row.title))}</a>',
+        unsafe_allow_html=True,
+    )
+    release_col.write(row.releaseDate)
+    duration_col.write(row.duration)
+    views_col.write(f"{int(row.viewCount):,}")
+    likes_col.write(f"{int(row.likeCount):,}")
+    comments_col.write(f"{int(row.commentCount):,}")
+    if action_col.button("Analysis", key=f"analysis_{row.video_id}", use_container_width=True):
+        st.query_params["video"] = row.video_id
+        st.rerun()
 
 st.caption(
     f"Last refreshed: {pd.Timestamp.now(tz='UTC').tz_convert('Asia/Kolkata').strftime('%Y-%m-%d %H:%M:%S IST')}"
